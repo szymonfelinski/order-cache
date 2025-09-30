@@ -32,7 +32,7 @@ void printMatchingSizes(OrderCache& cache, const std::vector<std::string>& secId
 void testExample(const std::string& name, const std::vector<Order>& orders,
                  const std::vector<std::pair<std::string, unsigned int>>& expectedMatches) {
     OrderCache cache;
-    std::cout << "\n========== " << name << " ==========\n";
+    std::cout << "\nTest: " << name;
 
     for (const auto& ord : orders) cache.addOrder(ord);
 
@@ -47,11 +47,10 @@ void testExample(const std::string& name, const std::vector<Order>& orders,
     for (const auto& [secId, expected] : expectedMatches) {
         assert(cache.getMatchingSizeForSecurity(secId) == expected);
     }
-    std::cout << "✅ " << name << " passed all matching size checks\n";
+    std::cout << name << " passed all matching size checks\n";
 }
 
 int main() {
-    // Example set of orders and expected results
     testExample("Order Matching Example",
         {
             Order("OrdId1", "SecId1", "Buy", 1000, "User1", "CompanyA"),
@@ -70,7 +69,6 @@ int main() {
         }
     );
 
-    // Example 1
     testExample("Example 1",
         {
             Order("OrdId1", "SecId1", "Sell", 100, "User10", "Company2"),
@@ -94,7 +92,6 @@ int main() {
         }
     );
 
-    // Example 2
     testExample("Example 2",
         {
             Order("OrdId1", "SecId3", "Sell", 100, "User1", "Company1"),
@@ -116,6 +113,6 @@ int main() {
         }
     );
 
-    std::cout << "\nAll examples completed successfully ✅\n";
+    std::cout << "\nAll examples completed successfully\n";
     return 0;
 }

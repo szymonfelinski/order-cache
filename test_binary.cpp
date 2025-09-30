@@ -6,7 +6,6 @@
 #include <chrono>
 
 #include "OrderCache.h"
-#include "Order.h"
 
 void printMatchingSize(OrderCache& cache, const std::string& secId) {
     std::cout << "Matching size for " << secId << " = "
