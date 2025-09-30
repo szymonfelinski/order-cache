@@ -7,28 +7,27 @@
 #include <algorithm>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 
 #include "OrderCacheInterface.h"
 
-class OrderCache : public OrderCacheInterface
-{
+class OrderCache : public OrderCacheInterface {
 public:
     OrderCache() = default;
 
-    // add order to the cache
-    void addOrder(Order order) override
-    {
-        std::unique_lock lock(mutex_); // exclusive lock
+    // Add order to cache
+    // Throws std::runtime_error if an order with same orderId exists
+    void addOrder(Order order) override {
+        std::unique_lock lock(mutex_);
 
         const std::string id = order.orderId();
-        auto it = orders_.find(id);
-        if (it != orders_.end()) {
-            removeOrderInternal(id);
+        if (orders_.find(id) != orders_.end()) {
+            throw std::runtime_error("Order with ID already exists: " + id);
         }
 
-        unsigned int qty = order.qty();
         const std::string& sec = order.securityId();
         const std::string& user = order.user();
+        unsigned int qty = order.qty();
 
         orders_.emplace(id, std::move(order));
         userIndex_[user].insert(id);
@@ -36,41 +35,29 @@ public:
         securityQty_[sec] += qty;
     }
 
-    // remove order with this unique order id from the cache
-    void cancelOrder(const std::string& orderId) override
-    {
+    // Remove order with given ID (do nothing if not exists)
+    void cancelOrder(const std::string& orderId) override {
         std::unique_lock lock(mutex_);
-
-        auto it = orders_.find(orderId);
-        if (it == orders_.end()) return;
         removeOrderInternal(orderId);
     }
 
-    // remove all orders in the cache for this user
-    void cancelOrdersForUser(const std::string& user) override
-    {
+    // Remove all orders for a given user
+    void cancelOrdersForUser(const std::string& user) override {
         std::unique_lock lock(mutex_);
-
         auto uit = userIndex_.find(user);
         if (uit == userIndex_.end()) return;
 
-        std::vector<std::string> toRemove;
-        toRemove.reserve(uit->second.size());
-        for (const auto& id : uit->second) toRemove.push_back(id);
-
+        std::vector<std::string> toRemove(uit->second.begin(), uit->second.end());
         for (const auto& id : toRemove) removeOrderInternal(id);
     }
 
-    // remove all orders in the cache for this security with qty >= minQty
-    void cancelOrdersForSecIdWithMinimumQty(const std::string& securityId, unsigned int minQty) override
-    {
+    // Remove orders for securityId with qty >= minQty
+    void cancelOrdersForSecIdWithMinimumQty(const std::string& securityId, unsigned int minQty) override {
         std::unique_lock lock(mutex_);
-
         auto sit = secIndex_.find(securityId);
         if (sit == secIndex_.end()) return;
 
         std::vector<std::string> toRemove;
-        toRemove.reserve(sit->second.size());
         for (const auto& id : sit->second) {
             auto oit = orders_.find(id);
             if (oit != orders_.end() && oit->second.qty() >= minQty) {
@@ -81,20 +68,19 @@ public:
         for (const auto& id : toRemove) removeOrderInternal(id);
     }
 
-    // return the total qty that can match for the security id
-    unsigned int getMatchingSizeForSecurity(const std::string& securityId) override
-    {
-        std::shared_lock lock(mutex_); // shared lock for reads
-
+    // Return total quantity that can match for a given securityId
+    unsigned int getMatchingSizeForSecurity(const std::string& securityId) override {
+        std::shared_lock lock(mutex_);
         unsigned int totalMatched = 0;
-        std::vector<Order> buys;
-        std::vector<Order> sells;
 
         auto sit = secIndex_.find(securityId);
         if (sit == secIndex_.end()) return 0;
 
-        for (const auto& orderId : sit->second) {
-            auto oit = orders_.find(orderId);
+        std::vector<Order> buys;
+        std::vector<Order> sells;
+
+        for (const auto& id : sit->second) {
+            auto oit = orders_.find(id);
             if (oit == orders_.end()) continue;
             const Order& ord = oit->second;
             if (ord.side() == "Buy") buys.push_back(ord);
@@ -123,22 +109,17 @@ public:
         return totalMatched;
     }
 
-    // return all orders in cache in a vector
-    std::vector<Order> getAllOrders() const override
-    {
+    // Return all orders in cache
+    std::vector<Order> getAllOrders() const override {
         std::shared_lock lock(mutex_);
-
         std::vector<Order> result;
         result.reserve(orders_.size());
-        for (const auto& kv : orders_) {
-            result.push_back(kv.second);
-        }
+        for (const auto& kv : orders_) result.push_back(kv.second);
         return result;
     }
 
 private:
-    void removeOrderInternal(const std::string& orderId)
-    {
+    void removeOrderInternal(const std::string& orderId) {
         auto oit = orders_.find(orderId);
         if (oit == orders_.end()) return;
 
@@ -149,11 +130,8 @@ private:
 
         auto sqit = securityQty_.find(sec);
         if (sqit != securityQty_.end()) {
-            if (sqit->second <= qty) {
-                securityQty_.erase(sqit);
-            } else {
-                sqit->second -= qty;
-            }
+            if (sqit->second <= qty) securityQty_.erase(sqit);
+            else sqit->second -= qty;
         }
 
         auto sit = secIndex_.find(sec);
@@ -171,8 +149,7 @@ private:
         orders_.erase(oit);
     }
 
-    mutable std::shared_mutex mutex_; // protects all members
-
+    mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, Order> orders_;
     std::unordered_map<std::string, std::unordered_set<std::string>> userIndex_;
     std::unordered_map<std::string, std::unordered_set<std::string>> secIndex_;
