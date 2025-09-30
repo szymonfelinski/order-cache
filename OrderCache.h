@@ -15,8 +15,6 @@ class OrderCache : public OrderCacheInterface {
 public:
     OrderCache() = default;
 
-    // Add order to cache
-    // Throws std::runtime_error if an order with same orderId exists
     void addOrder(Order order) override {
         std::unique_lock lock(mutex_);
 
@@ -25,96 +23,87 @@ public:
             throw std::runtime_error("Order with ID already exists: " + id);
         }
 
-        const std::string& sec = order.securityId();
-        const std::string& user = order.user();
-        unsigned int qty = order.qty();
+        auto orderPtr = &orders_.emplace(id, std::move(order)).first->second;
 
-        orders_.emplace(id, std::move(order));
-        userIndex_[user].insert(id);
-        secIndex_[sec].insert(id);
-        securityQty_[sec] += qty;
+        userIndex_[orderPtr->user()].insert(orderPtr);
+        secIndex_[orderPtr->securityId()][orderPtr->side()].insert(orderPtr);
+        securityQty_[orderPtr->securityId()] += orderPtr->qty();
     }
 
-    // Remove order with given ID (do nothing if not exists)
     void cancelOrder(const std::string& orderId) override {
         std::unique_lock lock(mutex_);
         removeOrderInternal(orderId);
     }
 
-    // Remove all orders for a given user
     void cancelOrdersForUser(const std::string& user) override {
         std::unique_lock lock(mutex_);
         auto uit = userIndex_.find(user);
         if (uit == userIndex_.end()) return;
 
-        std::vector<std::string> toRemove(uit->second.begin(), uit->second.end());
-        for (const auto& id : toRemove) removeOrderInternal(id);
+        std::vector<Order*> toRemove(uit->second.begin(), uit->second.end());
+        for (auto ptr : toRemove) removeOrderInternal(ptr->orderId());
     }
 
-    // Remove orders for securityId with qty >= minQty
     void cancelOrdersForSecIdWithMinimumQty(const std::string& securityId, unsigned int minQty) override {
         std::unique_lock lock(mutex_);
         auto sit = secIndex_.find(securityId);
         if (sit == secIndex_.end()) return;
 
-        std::vector<std::string> toRemove;
-        for (const auto& id : sit->second) {
-            auto oit = orders_.find(id);
-            if (oit != orders_.end() && oit->second.qty() >= minQty) {
-                toRemove.push_back(id);
+        std::vector<Order*> toRemove;
+        for (auto& [side, ordersSet] : sit->second) {
+            for (auto ptr : ordersSet) {
+                if (ptr->qty() >= minQty) toRemove.push_back(ptr);
             }
         }
 
-        for (const auto& id : toRemove) removeOrderInternal(id);
+        for (auto ptr : toRemove) removeOrderInternal(ptr->orderId());
     }
 
-    // Return total quantity that can match for a given securityId
     unsigned int getMatchingSizeForSecurity(const std::string& securityId) override {
         std::shared_lock lock(mutex_);
-        unsigned int totalMatched = 0;
-
         auto sit = secIndex_.find(securityId);
         if (sit == secIndex_.end()) return 0;
 
-        std::vector<Order> buys;
-        std::vector<Order> sells;
+        auto& buys = sit->second["Buy"];
+        auto& sells = sit->second["Sell"];
 
-        for (const auto& id : sit->second) {
-            auto oit = orders_.find(id);
-            if (oit == orders_.end()) continue;
-            const Order& ord = oit->second;
-            if (ord.side() == "Buy") buys.push_back(ord);
-            else if (ord.side() == "Sell") sells.push_back(ord);
-        }
+        if (buys.empty() || sells.empty()) return 0;
 
-        std::unordered_map<std::string, unsigned int> buyQty;
-        std::unordered_map<std::string, unsigned int> sellQty;
-        for (const auto& b : buys) buyQty[b.orderId()] = b.qty();
-        for (const auto& s : sells) sellQty[s.orderId()] = s.qty();
+        // Avoid repeated allocations
+        std::unordered_map<Order*, unsigned int> buyQty;
+        std::unordered_map<Order*, unsigned int> sellQty;
 
-        for (auto& buy : buys) {
-            unsigned int& buyRemaining = buyQty[buy.orderId()];
-            for (auto& sell : sells) {
-                unsigned int& sellRemaining = sellQty[sell.orderId()];
-                if (buy.company() == sell.company()) continue;
-                if (buyRemaining == 0 || sellRemaining == 0) continue;
+        for (auto ptr : buys) buyQty[ptr] = ptr->qty();
+        for (auto ptr : sells) sellQty[ptr] = ptr->qty();
+
+        unsigned int totalMatched = 0;
+
+        for (auto buyPtr : buys) {
+            unsigned int& buyRemaining = buyQty[buyPtr];
+            if (buyRemaining == 0) continue;
+
+            for (auto sellPtr : sells) {
+                unsigned int& sellRemaining = sellQty[sellPtr];
+                if (sellRemaining == 0) continue;
+                if (buyPtr->company() == sellPtr->company()) continue;
 
                 unsigned int matchedQty = std::min(buyRemaining, sellRemaining);
                 buyRemaining -= matchedQty;
                 sellRemaining -= matchedQty;
                 totalMatched += matchedQty;
+
+                if (buyRemaining == 0) break;
             }
         }
 
         return totalMatched;
     }
 
-    // Return all orders in cache
     std::vector<Order> getAllOrders() const override {
         std::shared_lock lock(mutex_);
         std::vector<Order> result;
         result.reserve(orders_.size());
-        for (const auto& kv : orders_) result.push_back(kv.second);
+        for (auto& kv : orders_) result.push_back(kv.second);
         return result;
     }
 
@@ -123,10 +112,11 @@ private:
         auto oit = orders_.find(orderId);
         if (oit == orders_.end()) return;
 
-        const Order& ord = oit->second;
-        const std::string& user = ord.user();
-        const std::string& sec = ord.securityId();
-        unsigned int qty = ord.qty();
+        Order* ordPtr = &oit->second;
+        const std::string& user = ordPtr->user();
+        const std::string& sec = ordPtr->securityId();
+        const std::string& side = ordPtr->side();
+        unsigned int qty = ordPtr->qty();
 
         auto sqit = securityQty_.find(sec);
         if (sqit != securityQty_.end()) {
@@ -136,13 +126,15 @@ private:
 
         auto sit = secIndex_.find(sec);
         if (sit != secIndex_.end()) {
-            sit->second.erase(orderId);
+            auto& sideSet = sit->second[side];
+            sideSet.erase(ordPtr);
+            if (sideSet.empty()) sit->second.erase(side);
             if (sit->second.empty()) secIndex_.erase(sit);
         }
 
         auto uit = userIndex_.find(user);
         if (uit != userIndex_.end()) {
-            uit->second.erase(orderId);
+            uit->second.erase(ordPtr);
             if (uit->second.empty()) userIndex_.erase(uit);
         }
 
@@ -151,7 +143,7 @@ private:
 
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::string, Order> orders_;
-    std::unordered_map<std::string, std::unordered_set<std::string>> userIndex_;
-    std::unordered_map<std::string, std::unordered_set<std::string>> secIndex_;
+    std::unordered_map<std::string, std::unordered_set<Order*>> userIndex_;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::unordered_set<Order*>>> secIndex_;
     std::unordered_map<std::string, unsigned int> securityQty_;
 };
