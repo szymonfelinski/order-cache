@@ -5,3 +5,7 @@ project('order-cache', 'cpp',
 executable('order-cache',
            'main.cpp',
            install : true)
+
+executable('stress-test',
+           'stress_test.cpp',
+           install : true)
