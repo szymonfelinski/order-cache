@@ -9,3 +9,7 @@ executable('order-cache',
 executable('stress-test',
            'stress_test.cpp',
            install : true)
+
+executable('test-binary',
+           'test_binary.cpp',
+           install : true)
