@@ -11,10 +11,15 @@
 
 #include "OrderCacheInterface.h"
 
+// OrderCache maintains a thread-safe collection of orders with efficient lookup by user, security, and side
+// Supports matching of buy/sell orders while preventing matches between orders from the same company
 class OrderCache : public OrderCacheInterface {
 public:
     OrderCache() = default;
 
+    // Adds a new order to the cache and updates all indices
+    // Throws if an order with the same ID already exists
+    // Thread-safe: uses unique_lock
     void addOrder(Order order) override {
         std::unique_lock lock(mutex_);
 
@@ -30,11 +35,17 @@ public:
         securityQty_[orderPtr->securityId()] += orderPtr->qty();
     }
 
+    // Cancels a single order by its ID
+    // No-op if order doesn't exist
+    // Thread-safe: uses unique_lock
     void cancelOrder(const std::string& orderId) override {
         std::unique_lock lock(mutex_);
         removeOrderInternal(orderId);
     }
 
+    // Cancels all orders belonging to a specific user
+    // No-op if user has no orders
+    // Thread-safe: uses unique_lock
     void cancelOrdersForUser(const std::string& user) override {
         std::unique_lock lock(mutex_);
         auto uit = userIndex_.find(user);
@@ -44,6 +55,9 @@ public:
         for (auto ptr : toRemove) removeOrderInternal(ptr->orderId());
     }
 
+    // Cancels all orders for a security ID where quantity >= minQty
+    // No-op if security ID doesn't exist or no orders meet the quantity threshold
+    // Thread-safe: uses unique_lock
     void cancelOrdersForSecIdWithMinimumQty(const std::string& securityId, unsigned int minQty) override {
         std::unique_lock lock(mutex_);
         auto sit = secIndex_.find(securityId);
@@ -59,6 +73,10 @@ public:
         for (auto ptr : toRemove) removeOrderInternal(ptr->orderId());
     }
 
+    // Calculates the total quantity that can be matched between buy and sell orders
+    // for a given security, excluding matches between orders from the same company
+    // Thread-safe: uses shared_lock for concurrent reads
+    // Returns 0 if security doesn't exist or no matches are possible
     unsigned int getMatchingSizeForSecurity(const std::string& securityId) override {
         std::shared_lock lock(mutex_);
         auto sit = secIndex_.find(securityId);
@@ -109,6 +127,8 @@ public:
         return totalMatched;
     }
 
+    // Returns a copy of all orders currently in the cache
+    // Thread-safe: uses shared_lock for concurrent reads
     std::vector<Order> getAllOrders() const override {
         std::shared_lock lock(mutex_);
         std::vector<Order> result;
@@ -118,6 +138,9 @@ public:
     }
 
 private:
+    // Helper method to remove an order and update all indices
+    // Caller must hold unique_lock
+    // No-op if order doesn't exist
     void removeOrderInternal(const std::string& orderId) {
         auto oit = orders_.find(orderId);
         if (oit == orders_.end()) return;
@@ -151,9 +174,14 @@ private:
         orders_.erase(oit);
     }
 
+    // Mutex for thread-safe access to the cache
     mutable std::shared_mutex mutex_;
+    // Primary storage for all orders, indexed by order ID
     std::unordered_map<std::string, Order> orders_;
+    // Index for quick lookup of orders by user
     std::unordered_map<std::string, std::unordered_set<Order*>> userIndex_;
+    // Nested index for quick lookup of orders by security ID and side (Buy/Sell)
     std::unordered_map<std::string, std::unordered_map<std::string, std::unordered_set<Order*>>> secIndex_;
+    // Track total quantity for each security
     std::unordered_map<std::string, unsigned int> securityQty_;
 };
