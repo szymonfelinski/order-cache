@@ -36,8 +36,8 @@ void readMatchingSizes(OrderCache& cache, const std::vector<std::string>& secIds
 int main() {
     OrderCache cache;
 
-    constexpr int numThreads = 20;
-    constexpr int ordersPerThread = 1000;
+    constexpr int numThreads = 30;
+    constexpr int ordersPerThread = 10000;
 
     // Thread pool
     std::vector<std::thread> threads;
