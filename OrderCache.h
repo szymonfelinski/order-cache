@@ -64,38 +64,48 @@ public:
         auto sit = secIndex_.find(securityId);
         if (sit == secIndex_.end()) return 0;
 
-        auto& buys = sit->second["Buy"];
-        auto& sells = sit->second["Sell"];
+        auto itBuy = sit->second.find("Buy");
+        auto itSell = sit->second.find("Sell");
+        if (itBuy == sit->second.end() || itSell == sit->second.end()) return 0;
 
-        if (buys.empty() || sells.empty()) return 0;
+        const auto& buysSet = itBuy->second;
+        const auto& sellsSet = itSell->second;
+        if (buysSet.empty() || sellsSet.empty()) return 0;
 
-        // Avoid repeated allocations
-        std::unordered_map<Order*, unsigned int> buyQty;
-        std::unordered_map<Order*, unsigned int> sellQty;
-
-        for (auto ptr : buys) buyQty[ptr] = ptr->qty();
-        for (auto ptr : sells) sellQty[ptr] = ptr->qty();
-
-        unsigned int totalMatched = 0;
-
-        for (auto buyPtr : buys) {
-            unsigned int& buyRemaining = buyQty[buyPtr];
-            if (buyRemaining == 0) continue;
-
-            for (auto sellPtr : sells) {
-                unsigned int& sellRemaining = sellQty[sellPtr];
-                if (sellRemaining == 0) continue;
-                if (buyPtr->company() == sellPtr->company()) continue;
-
-                unsigned int matchedQty = std::min(buyRemaining, sellRemaining);
-                buyRemaining -= matchedQty;
-                sellRemaining -= matchedQty;
-                totalMatched += matchedQty;
-
-                if (buyRemaining == 0) break;
-            }
+        // Copy the pointers into vectors to avoid repeated hash table allocations
+        std::vector<Order*> buys(buysSet.begin(), buysSet.end());
+        std::vector<Order*> sells(sellsSet.begin(), sellsSet.end());
+        
+        // Create vectors holding the remaining quantities
+        std::vector<unsigned int> buyRemaining(buys.size());
+        std::vector<unsigned int> sellRemaining(sells.size());
+        
+        for (size_t i = 0; i < buys.size(); ++i) {
+            buyRemaining[i] = buys[i]->qty();
+        }
+        for (size_t i = 0; i < sells.size(); ++i) {
+            sellRemaining[i] = sells[i]->qty();
         }
 
+        unsigned int totalMatched = 0;
+        
+        // Greedy matching algorithm between buys and sells
+        for (size_t i = 0; i < buys.size(); ++i) {
+            if (buyRemaining[i] == 0) continue;
+            for (size_t j = 0; j < sells.size(); ++j) {
+                if (sellRemaining[j] == 0) continue;
+                // Skip matching if companies are the same
+                if (buys[i]->company() == sells[j]->company()) continue;
+                
+                unsigned int match = std::min(buyRemaining[i], sellRemaining[j]);
+                buyRemaining[i] -= match;
+                sellRemaining[j] -= match;
+                totalMatched += match;
+                
+                if (buyRemaining[i] == 0) break;
+            }
+        }
+        
         return totalMatched;
     }
 
